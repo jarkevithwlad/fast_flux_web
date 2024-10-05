@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en" translate="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fast flux</title>
+    <meta name="google" content="notranslate">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #1E1E1E; /* Измененный цвет фона */
+            color: white; /* Цвет текста для лучшей читаемости на темном фоне */
+            transition: margin-top 0.3s;
+        }
+        #input-container {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: rgba(51, 51, 51, 0.9); /* Полупрозрачный фон для контейнера */
+            padding: 10px;
+            z-index: 1000;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px); /* Эффект размытия фона */
+            transition: transform 0.3s;
+        }
+        .hidden {
+            transform: translateY(-100%);
+        }
+        input {
+            padding: 10px;
+            width: 95%;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-right: 10px;
+            background-color: #2c2c2c; /* Фон для поля ввода */
+            color: white;
+        }
+        button {
+            padding: 10px 15px; /* Увеличены отступы для большего пространства */
+            min-width: 150px; /* Минимальная ширина кнопки */
+            max-width: 200px; /* Максимальная ширина кнопки */
+            border: none;
+            background-color: #28a745;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            overflow: hidden; /* Скрыть переполнение */
+            text-overflow: ellipsis; /* Добавить многоточие в конце, если текст слишком длинный */
+        }
+        button:hover {
+            background-color: #218838;
+        }
+        #image-result {
+            display: flex;
+            flex-direction: row; /* Изменено на ряд для горизонтального размещения изображений */
+            flex-wrap: wrap; /* Обеспечивает перенос изображений на новую строку */
+            justify-content: center; /* Центрирует изображения по горизонтали */
+            margin-top: 80px;
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 10px; /* Добавлено для отступов между изображениями */
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3); /* Добавлен эффект тени для изображений */
+            cursor: pointer; /* Курсор при наведении на изображение */
+        }
+        .loading {
+            text-align: center;
+            margin: 20px;
+        }
+
+        /* Медиа-запрос для адаптивности */
+        @media (max-width: 768px) {
+            #image-result {
+                flex-direction: column; /* Изменение на вертикальное размещение на мобильных устройствах */
+                align-items: center; /* Центрирование изображений */
+            }
+            img {
+                margin: 5px 0; /* Меньшие отступы для изображений */
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="input-container">
+        <input type="text" id="prompt" placeholder="Введите описание изображения" />
+        <button id="generateBtn">Создать изображение</button>
+    </div>
+    
+    <div id="image-result"></div>
+    <div id="loading" class="loading" style="display: none;">Загрузка...</div>
+
+    <script>
+        const apiKey = "FBMP4fcFJXCy6KTBKbHCeVmVRNtjY1xF";  // Вставьте ваш API ключ
+        const websocketUrl = "wss://ws-api.runware.ai/v1";  // URL WebSocket
+        let socket;
+        let isLoading = false; // Флаг для загрузки изображений
+        const imagesToLoadOnClick = 4; // Количество изображений для загрузки при нажатии на кнопку
+        const imagesToLoadOnScroll = 2; // Количество изображений для загрузки при прокрутке
+        let prompt = ""; // Сохраняем текущий запрос
+
+        let lastScrollTop = 0;
+        const inputContainer = document.getElementById('input-container');
+
+        // Функция для подключения к WebSocket
+        async function connectWebSocket() {
+            return new Promise((resolve, reject) => {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    return resolve();
+                }
+
+                socket = new WebSocket(websocketUrl);
+
+                socket.onopen = () => {
+                    console.log("Подключено к WebSocket");
+
+                    const authRequest = [
+                        {
+                            "taskType": "authentication",
+                            "apiKey": apiKey
+                        }
+                    ];
+
+                    socket.send(JSON.stringify(authRequest));
+
+                    socket.onmessage = (event) => {
+                        const authResponse = JSON.parse(event.data);
+                        if (authResponse[0].status === 'authenticated') {
+                            console.log("Аутентификация успешна");
+                            resolve();
+                        } else {
+                            reject("Ошибка аутентификации");
+                        }
+                    };
+                };
+
+                socket.onerror = (error) => {
+                    console.error("Ошибка WebSocket:", error);
+                    reject(error);
+                };
+
+                socket.onclose = () => {
+                    console.log("Соединение WebSocket закрыто");
+                };
+            });
+        }
+
+        // Функция для отправки запроса на создание изображений
+        function generateImages(imagesToLoad) {
+            const imageRequest = [
+                {
+                    "positivePrompt": prompt,
+                    "model": "runware:100@1",
+                    "steps": 6,
+                    "width": 1024,
+                    "height": 1024,
+                    "numberResults": imagesToLoad,
+                    "outputType": ["URL"],
+                    "taskType": "imageInference",
+                    "taskUUID": generateUUID()
+                }
+            ];
+
+            socket.send(JSON.stringify(imageRequest));
+
+            socket.onmessage = async (event) => {
+                const response = JSON.parse(event.data);
+                if (response.data && response.data.length > 0) {
+                    for (const data of response.data) {
+                        const imageUrl = data.imageURL;
+                        const base64Image = await convertToBase64(imageUrl);
+                        displayImage(base64Image);
+                    }
+                }
+                isLoading = false;
+                document.getElementById('loading').style.display = 'none';
+            };
+        }
+
+        // Функция для конвертации URL изображения в Base64
+        async function convertToBase64(url) {
+            const response = await fetch(url);
+            const blob = await response.blob();
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    resolve(reader.result); // Возвращаем Base64 строку
+                };
+                reader.onerror = reject; // Обработка ошибок
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        // Функция для генерации уникального UUID
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        // Функция для отображения изображений
+        function displayImage(base64Image) {
+            const imageResult = document.getElementById('image-result');
+            const imgElement = document.createElement('img');
+            imgElement.src = base64Image; // Используем Base64 строку
+
+            // Создаем ссылку для скачивания
+            const downloadLink = document.createElement('a');
+            downloadLink.href = base64Image; // Устанавливаем ссылку на Base64 изображение
+            downloadLink.download = 'image.png'; // Имя файла для скачивания
+
+            // Добавляем обработчик события для скачивания изображения
+            downloadLink.appendChild(imgElement); // Вкладываем изображение в ссылку
+            imgElement.style.cursor = 'pointer'; // Изменяем курсор для указания, что изображение можно скачать
+
+            imageResult.appendChild(downloadLink); // Добавляем ссылку в контейнер изображений
+        }
+
+        // Функция для проверки наличия русских символов
+        function containsRussianCharacters(text) {
+            return /[а-яА-ЯЁё]/.test(text);
+        }
+
+        // Функция для перевода текста
+        async function translateText(text) {
+            const sourceLang = "ru";
+            const targetLang = "en";
+            const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                return data[0][0][0];
+            } catch (error) {
+                return null;
+            }
+        }
+
+        // Аутентификация при загрузке страницы
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                await connectWebSocket();
+            } catch (error) {
+                console.error("Ошибка при подключении WebSocket:", error);
+            }
+        });
+
+        // Обработка нажатия на кнопку "Создать изображение"
+        document.getElementById('generateBtn').addEventListener('click', async () => {
+            prompt = document.getElementById('prompt').value;
+
+            if (prompt.trim() === "") {
+                alert("Введите описание изображения.");
+                return;
+            }
+
+            // Проверка на наличие русских символов
+            if (containsRussianCharacters(prompt)) {
+                const translatedPrompt = await translateText(prompt);
+                if (translatedPrompt) {
+                    prompt = translatedPrompt; // Используем переведённый текст
+                } else {
+                    alert("Ошибка при переводе текста.");
+                    return;
+                }
+            }
+
+            isLoading = true;
+            document.getElementById('loading').style.display = 'block';
+
+            generateImages(imagesToLoadOnClick);
+        });
+
+        // Обработка прокрутки страницы
+        window.addEventListener('scroll', () => {
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            
+            if (scrollTop > lastScrollTop) {
+                inputContainer.classList.add('hidden');
+            } else {
+                inputContainer.classList.remove('hidden');
+            }
+            lastScrollTop = scrollTop <= 0 ? 0 : scrollTop;
+        });
+
+        // Автоматическая подгрузка при прокрутке до предпоследнего изображения
+        window.addEventListener('scroll', () => {
+            const imageResult = document.getElementById('image-result');
+            if (imageResult.childNodes.length > 0) {
+                const lastImage = imageResult.lastChild;
+                const rect = lastImage.getBoundingClientRect();
+                const isVisible = rect.top <= window.innerHeight && rect.bottom >= 0;
+
+                if (isVisible && !isLoading) {
+                    isLoading = true;
+                    document.getElementById('loading').style.display = 'block';
+                    generateImages(imagesToLoadOnScroll);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
